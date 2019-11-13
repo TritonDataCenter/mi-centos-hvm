@@ -1,0 +1,424 @@
+#!/bin/bash
+
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+#
+
+#
+# Copyright 2019 Joyent, Inc.
+#
+
+if [[ -n "$TRACE" ]]; then
+	export PS4='[\D{%FT%TZ}] ${BASH_SOURCE}:${LINENO}: ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
+	set -o xtrace
+else
+	TRACE=
+fi
+
+set -euo pipefail
+IFS=$'\n\t'
+
+import_gpg_keys() {
+	local file
+
+	for file in $distrel/keys/*; do
+		if [[ -f $file ]]; then
+			found_key=true
+			echo "Importing gpg key from $file"
+			gpg --import $file
+		fi
+	done
+	if [[ $found_key == false ]]; then
+		echo "$0: Warning: no gpg key found in \
+		    keys/$distro_l-$release" 1>&2
+	fi
+
+}
+
+iso_file=
+iso_sha=
+get_iso_file_sha() {
+	local file
+
+	if [[ -n $iso_file ]]; then
+		return
+	fi
+
+	echo "Checking to see if we have the iso for $distro $release:"
+	for file in sha256sum.txt sha256sum.txt.asc; do
+		curl -s -o $iso_dir/$file $ISO_URL/$file
+	done
+	gpg --verify $iso_dir/sha256sum.txt.asc
+
+	# As new dot releases come out, the name of the iso file changes
+	# according to a predictable pattern.  The sha256sums.txt file contains
+	# the proper name.
+	eval $(awk -v pattern="$DVD_PATTERN" \
+	    '$2 ~ pattern { printf("iso_sha=%s; iso_file=%s;", $1, $2) }' \
+	    $iso_dir/sha256sum.txt)
+	if [[ -z $iso_file || -z $iso_sha ]]; then
+		echo "$0: unable to determine ISO file and/or sha256" 1>&2
+		exit 1
+	fi
+}
+
+fetch_iso() {
+	local file sha out
+	local need_iso=false
+	local found_key=false
+
+	if [[ ! -d $iso_dir ]]; then
+		mkdir -p $iso_dir
+	fi
+
+	import_gpg_keys
+	get_iso_file_sha
+
+	echo "Checking integrity of $iso_file"
+	if [[ ! -f $iso_dir/$iso_file ]]; then
+		echo "No local copy of $iso_file. Fetching latest $iso_file"
+		need_iso=true
+	elif ! echo $iso_sha $iso_dir/$iso_file | sha256sum -c -; then
+		echo "Local copy of $iso_file is bad." \
+		    "Fetching latest $iso_file."
+		rm -f "$iso_dir/$iso_file"
+		need_iso=true
+	fi
+
+	if $need_iso; then
+		curl -o "$iso_dir/$iso_file" "$ISO_URL/$iso_file"
+		echo "Checking integrity of $iso_dir/$iso_file"
+		echo "$iso_sha" "$iso_dir/$iso_file" | sha256sum -c -
+	fi
+}
+
+mount_iso() {
+	local file=$1
+	local mntpt=$2
+
+	# Check if $mntpt is already mounted
+	# This may happen if a previous build failed
+	if df -h "$mntpt" 2>/dev/null | grep -qw "$mntpt"; then
+		echo "Unmounting $mntpt from previous build..."
+		umount "$mntpt"
+	fi
+
+	echo "Mounting $file to $mntpt"
+	if [[ ! -d $mntpt ]]; then
+		echo "Creating $mntpt..."
+		mkdir -p "$mntpt"
+	fi
+	case $(uname -s) in
+		Linux)
+			mount "$file" "$mntpt" -o loop
+			;;
+		SunOS)
+			mount -F hsfs "$file" "$mntpt"
+			;;
+		*)
+			echo "$0: do not know how to mount an iso on" \
+			    "$(uname -s)". 1>&2
+			exit 2
+			;;
+	esac
+}
+
+create_ks_root() {
+	local src_mntpt=/tmp/mnt/$distrel
+
+	echo "Creating ISO Layout"
+
+	if [[ -d $ks_root ]]; then
+		echo "Layout $ks_root exists...nuking"
+		rm -rf "$ks_root"
+	fi
+	echo "Creating $ks_root"
+	mkdir -p "$ks_root"
+
+	if [[ -d $custom_rpms ]]; then
+		echo "Copying custom RPMS"
+		find "$custom_rpms" -type f -exec cp {} "$ks_root/Packages" \;
+	fi
+
+	if [[ -f $custom_rpms.remote ]]; then
+		echo "Downloading custom RPMS"
+		local rpm
+		mkdir -p "$ks_root/Packages"
+		pushd "$ks_root/Packages" >/dev/null
+		for rpm in $(sed 's/#.*//' $custom_rpms.remote); do
+			echo "  $(basename $rpm)"
+			curl -O "$rpm"
+		done
+		popd >/dev/null
+	fi
+
+	echo "Finished Populating Layout"
+}
+
+copy_ks_cfg() {
+	echo "Copying Kickstart file"
+	cp $ks_cfg $ks_root/ks.cfg
+}
+
+copy_guest_tools() {
+	echo "Copying $guesttools"
+	echo "Initiallizing and fetching submodule $guesttools"
+	git submodule update --init
+	cp -R ./$guesttools/ $ks_root/
+}
+
+create_ks_iso() {
+	echo "Preparing kickstart ISO"
+	copy_guest_tools
+	copy_ks_cfg
+	echo "Creating kickstart ISO"
+	mkisofs -r -R -J -T -v -V "kickstart" -A "kickstart" -o $ks_iso $ks_root
+	echo "Kickstart $ks_iso is ready"
+}
+
+create_image() {
+	local desc
+	local media_mntpt=/tmp/mnt/$distrel-media
+	local qemu_args=()
+	local append=
+
+	get_iso_file_sha
+
+	# create-hybrid-image puts the boot iso at index=0
+	qemu_args+=( "-drive" "file=$ks_iso,if=ide,index=1,media=cdrom" )
+
+	#
+	# We must specify boot args to initiate an unattended installation.
+	#
+	# Boot messages to serial console (which is on stdout), debugging and
+	# interaction with the installer possible on the VNC console.  A %pre
+	# command in the kickstart file will tail install logs to /dev/ttyS0
+	append="console=ttyS0 console=tty0"
+	# Ensure that network device names are predictable
+	append+=" net.ifnames=0 biosdevname=0"
+	# The install media is on a dvd with volume label "CentOS X x86_64"
+	append+=" ${BOOT_INST_PREFIX}stage2=hd:LABEL=$BOOT_DVD_VOLUME_ID"
+	# The kickstart config is on a dvd with volume label "kickstart"
+	append+=" ${BOOT_INST_PREFIX}ks=hd:/dev/sr1:/ks.cfg"
+	# Guest boot scripts run 'set -x' when tracing. Ignored before CentOS 7.
+	[[ -n "$TRACE" ]] && append+=" rd.debug"
+
+	qemu_args+=( "-append" "$append" )
+
+	#
+	# In order to specify boot args, we have to specify the kernel, initrd,
+	# and root file system
+	#
+	mount_iso "$iso_dir/$iso_file" "$media_mntpt"
+	qemu_args+=( "-kernel" "$media_mntpt/images/pxeboot/vmlinuz" )
+	qemu_args+=( "-initrd" "$media_mntpt/images/pxeboot/initrd.img" )
+
+	desc="$distro $release 64-bit image with just essential packages "
+	desc+="installed. Built to run on bhyve or KVM virtual machines."
+
+	local stamp=$branch-${cur_time//[:-]}-$githash
+	$top/eng/tools/create-hybrid-image -i "$iso_dir/$iso_file" \
+		-n "$distrel" -d "$desc" -p "$top/imgmanifest.in" \
+		-o "$top/bits/$distrel/$stamp" \
+		-u "https://docs.joyent.com/images/linux/$distro" \
+		-- "${qemu_args[@]}" 2>&1 | tee $distrel-qemu.log
+
+	# Verify that any JOYENT_STATUS_* items are all ok.  Ideally this would
+	# run before create-hybrid-image bothers with the zfs send.  Even though
+	# it is running a bit late here, it will prevent Jenkins from calling a
+	# build good
+	local have var val fail
+	fail=false
+	typeset -A have
+	for var in "${JOYENT_STATUS_VARS[@]}"; do
+		have["$var"]='<nothing>'
+	done
+	eval $(grep ": JOYENT_STATUS_" $distrel-qemu.log |
+		sed 's/.*: JOYENT_STATUS/JOYENT_STATUS/' | awk -F= \
+		    '{gsub("\r", "", $2); printf("have['%s']='%s'\n", $1, $2)}')
+	for var in "${JOYENT_STATUS_VARS[@]}"; do
+		val=${have[$var]}
+		if [[ "$val" != 'ok' ]]; then
+			echo "Error: expected $var=ok, got $var=$val" 1>&2
+			fail=true
+		else
+			echo "Ok: got $var=$val"
+		fi
+		unset have["$var"]
+	done
+	for var in "${!have[@]}"; do
+		val=${have[$var]}
+		echo "Error: unexpected $var=$val" 1>&2
+		fail=true
+	done
+
+	umount $media_mntpt
+	rmdir $media_mntpt
+
+	if [[ $fail == true ]]; then
+		exit 1
+	fi
+
+	# All is well - let future invocations of upload_image know.
+	echo "$stamp" > $top/bits/$distrel-latest-build-stamp
+}
+
+upload_image() {
+	local bits=bits
+
+	if [[ ! -f $bits/$distrel-latest-build-stamp ]]; then
+		echo "Error: no latest build" 2>&1
+		exit 1
+	fi
+	local stamp=$(cat $bits/$distrel-latest-build-stamp)
+
+	local publish=
+	if [[ -f /root/opt/imgapi-cli/bin/updates-imgadm ]]; then
+		publish=-p
+	fi
+	$top/eng/tools/bits-upload.sh $publish -b "$branch" \
+	    -D "$bits/$distrel/$stamp" \
+	    -d "/public/builds/$distrel" \
+	    -n "$distrel" \
+	    -t "$stamp"
+
+	local manta_url=${MANTA_URL:-https://us-east.manta.joyent.com}
+	local manta_path=${MANTA_USER:-Joyent_Dev}/public/builds/$distrel
+	local file path
+	find $bits/$distrel/$stamp -name \*.zfs.gz -o -name \*.imgmanifest |
+		while read file; do
+			path="/$manta_path/$stamp/$(basename $file)"
+			echo "$path"
+			echo "$manta_url/$path"
+			echo ""
+		done > $distrel.artifacts-in-manta
+}
+
+
+usage() {
+	cat <<EOF
+Usage:
+	$0 [options] [command ...]
+option:
+	-h	This message
+	-d	Distro name. One of centos, redhat, fedora
+	-r	Distro release
+
+Commands:
+	fetch	Fetch the installation ISO
+	ks_iso	Create a kickstart ISO
+	image	Generate the image
+
+If no command is given, all commands are run in the appropriate order.
+EOF
+}
+
+typeset -l distro_l=centos
+release=
+
+while getopts :hd:r: opt; do
+	case "$opt" in
+	d)
+		distro_l=$OPTARG
+		;;
+	r)  release=$OPTARG
+		;;
+	h)
+		usage;
+		exit 0
+		;;
+	\?)
+		echo "$0: Invalid option $OPTARG" 1>&2
+		usage 1>&2
+		exit 1
+		;;
+	*)
+		echo "$0: BUG: unhandled option $opt" 1>&2
+		exit 2
+		;;
+	esac
+done
+
+shift $(( OPTIND - 1 ))
+
+case $distro_l in
+centos)
+	distro=CentOS
+	;;
+*)
+	echo "$0: $distro_l not yet supported" 1>&2
+	exit 1
+	;;
+esac
+
+if [[ -z $release ]]; then
+	echo "$0: must specify $distro release with -r" 1>&2
+	exit 1
+fi
+
+cur_time=$(date +%FT%TZ)
+top=$(cd "$(dirname $0)" && pwd -P)
+distrel=$distro_l-$release
+custom_rpms=$top/$distrel/RPMS
+ks_root=$top/$distrel/root
+iso_dir=/data/mi-centos-hvm/fetched-iso/$distrel
+# The iso file generated by create_ks_iso
+ks_iso=$top/$distrel-ks.iso
+ks_cfg=$top/$distrel/ks.cfg
+guesttools=sdc-vmtools
+
+branch=$(git describe --all | sed -e 's,^heads/,,' -e 's,/,_,g')
+githash="$(git log -n 1 --pretty=format:%h)"
+
+# It is somewhat likely that various distros will need to tune these via
+# $distrel/create-image-overrides.sh.
+DVD_PATTERN=^$distro-$release-x86_64-DVD-[0-9]{4}\.iso$
+ISO_URL=https://mirrors.edge.kernel.org/$distro_l/$release/isos/x86_64
+# This could be obtained via "isoinfo -d | grep 'Volume id:' | ..."
+BOOT_DVD_VOLUME_ID="${distro}\x20${release}\x20x86_64"
+# CentOS 7 and later prefer "inst.ks"; earlier versions do not use "inst.".
+BOOT_INST_PREFIX=inst.
+# Each of these are expected to be set to "ok" in output from guest
+JOYENT_STATUS_VARS=( JOYENT_STATUS_PRE JOYENT_STATUS_POST )
+
+fail=false
+for cmd in curl gpg mkisofs; do
+	if ! type -path $cmd >/dev/null; then
+		fail=true
+		echo "$0: command $cmd not found" 1>&2
+	fi
+done
+
+if (( $(ps -o uid= -p $$) != 0 )); then
+	fail=true
+	echo "$0: must be root" 1>&2
+fi
+$fail && exit 1
+
+if [[ -f $distrel/create-image-overrides.sh ]]; then
+	. $distrel/create-image-overrides.sh
+fi
+
+if (( $# == 0 )); then
+	set -- fetch ks_iso image
+fi
+
+for arg in "$@"; do
+	case $arg in
+	fetch)
+		fetch_iso
+		;;
+	ks_iso)
+		create_ks_root
+		create_ks_iso
+		;;
+	image)
+		create_image
+		;;
+	upload)
+		upload_image
+		;;
+	esac
+done

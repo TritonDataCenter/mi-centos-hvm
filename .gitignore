@@ -1,0 +1,6 @@
+RPMS
+bits
+root
+*.artifacts-in-manta
+*.iso
+*.log
