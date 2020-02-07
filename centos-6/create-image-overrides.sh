@@ -5,7 +5,7 @@
 #
 
 #
-# Copyright 2019 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 DVD_PATTERN=^$distro-$release.[0-9]+-x86_64-bin-DVD1.iso$

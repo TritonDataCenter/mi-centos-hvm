@@ -7,7 +7,7 @@
 #
 
 #
-# Copyright 2019 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 if [[ -n "$TRACE" ]]; then
@@ -198,9 +198,9 @@ create_image() {
 	append="console=ttyS0 console=tty0"
 	# Ensure that network device names are predictable
 	append+=" net.ifnames=0 biosdevname=0"
-	# The install media is on a dvd with volume label "CentOS X x86_64"
-	append+=" ${BOOT_INST_PREFIX}stage2=hd:LABEL=$BOOT_DVD_VOLUME_ID"
-	# The kickstart config is on a dvd with volume label "kickstart"
+	# The install media is on the first dvd
+	append+=" ${BOOT_INST_PREFIX}stage2=hd:/dev/sr0"
+	# The kickstart config is on the second dvd
 	append+=" ${BOOT_INST_PREFIX}ks=hd:/dev/sr1:/ks.cfg"
 	# Guest boot scripts run 'set -x' when tracing. Ignored before CentOS 7.
 	[[ -n "$TRACE" ]] && append+=" rd.debug"
@@ -376,8 +376,6 @@ githash="$(git log -n 1 --pretty=format:%h)"
 # $distrel/create-image-overrides.sh.
 DVD_PATTERN=^$distro-$release-x86_64-DVD-[0-9]{4}\.iso$
 ISO_URL=https://mirrors.edge.kernel.org/$distro_l/$release/isos/x86_64
-# This could be obtained via "isoinfo -d | grep 'Volume id:' | ..."
-BOOT_DVD_VOLUME_ID="${distro}\x20${release}\x20x86_64"
 # CentOS 7 and later prefer "inst.ks"; earlier versions do not use "inst.".
 BOOT_INST_PREFIX=inst.
 # Each of these are expected to be set to "ok" in output from guest
