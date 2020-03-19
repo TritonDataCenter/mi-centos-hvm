@@ -68,6 +68,8 @@ To generate a CentOS `<version>` image run:
 While the primary focus of `create-image` is CentOS, it should be
 straight-forward to generate RHEL and Fedora images with this repo.  Once
 support is added, other distributions may be specified with the `-d` option.
+Other [repositories](https://github.com/joyent?q=mi--hvm) provide equivalent
+functionality for other distribution types.
 
 ```
 $ ./create-image -h

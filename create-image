@@ -164,7 +164,7 @@ copy_ks_cfg() {
 
 copy_guest_tools() {
 	echo "Copying $guesttools"
-	echo "Initiallizing and fetching submodule $guesttools"
+	echo "Initializing and fetching submodule $guesttools"
 	git submodule update --init
 	cp -R ./$guesttools/ $ks_root/
 }
@@ -389,7 +389,7 @@ for cmd in curl gpg mkisofs; do
 	fi
 done
 
-if (( $(ps -o uid= -p $$) != 0 )); then
+if (( $(id -u) != 0 )); then
 	fail=true
 	echo "$0: must be root" 1>&2
 fi
