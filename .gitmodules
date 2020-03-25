@@ -1,0 +1,6 @@
+[submodule "eng"]
+	path = eng
+	url = https://github.com/joyent/eng
+[submodule "sdc-vmtools"]
+	path = sdc-vmtools
+	url = https://github.com/joyent/sdc-vmtools
