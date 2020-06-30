@@ -17,17 +17,18 @@ get_iso_file_sha() {
     fi
 
     echo "Checking to see if we have the iso for $distro $release:"
-    file=CHECKSUM.asc
-    curl -s -o $iso_dir/$file $ISO_URL/$file
-    gpg --verify $iso_dir/$file
+    for file in CHECKSUM CHECKSUM.asc; do
+        curl -s -o $iso_dir/$file $ISO_URL/$file
+    done
+    gpg --verify $iso_dir/CHECKSUM.asc
 
     # As new dot releases come out, the name of the iso file changes according
-    # to a predictable pattern.  The sha256sums.txt file contains the proper
+    # to a predictable pattern. The CHECKUSM file contains the proper
     # name.
-    eval $(awk '$2 ~ "^.CentOS-8.\*-x86_64-dvd1.iso.$" {
+    eval $(awk '$2 ~ "CentOS-8.\*-x86_64-dvd1.iso.$" {
             gsub("[()]", "", $2);
 		    printf("iso_sha=%s; iso_file=%s;", $NF, $2);
-        }' $iso_dir/$file)
+        }' $iso_dir/CHECKSUM)
     if [[ -z $iso_file || -z $iso_sha ]]; then
         echo "$0: unable to determine ISO file and/or sha256" 1>&2
         exit 1
