@@ -12,12 +12,6 @@ pipeline {
     }
 
     stages {
-        stage('centos-6') {
-            steps {
-                sh('./create-image -r 6')
-                sh('./create-image -r 6 upload')
-            }
-        }
         stage('centos-7') {
             steps {
                 sh('./create-image -r 7')
