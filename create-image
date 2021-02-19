@@ -7,7 +7,7 @@
 #
 
 #
-# Copyright 2020 Joyent, Inc.
+# Copyright 2021 Joyent, Inc.
 #
 
 if [[ -n "$TRACE" ]]; then
@@ -156,7 +156,7 @@ create_ks_root() {
 
 	if [[ -d $custom_tarballs ]]; then
 		echo "Copying tarballs"
-		find $tarballs -type f -exec cp {} "$ks_root" \;
+		find $custom_tarballs -type f -exec cp {} "$ks_root" \;
 	fi
 
 	echo "Finished Populating Layout"
