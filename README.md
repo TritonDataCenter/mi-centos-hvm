@@ -6,6 +6,7 @@
 
 <!--
     Copyright 2020 Joyent, Inc.
+    Copyright 2022 MNX Cloud, Inc.
 -->
 
 # Centos Image Builder
@@ -35,7 +36,7 @@ set name=$topds
 end
 add fs
 set dir=/smartdc
-set special=/smartds
+set special=/smartdc
 set type=lofs
 set options=ro
 end
